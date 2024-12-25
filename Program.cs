@@ -1,9 +1,19 @@
 ﻿using System;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Timers;
 
-class Program
+internal class Program
 {
+    private static TimeMeasurement timer = new TimeMeasurement();
+    private static ManualResetEvent[] mainResetEvents = new ManualResetEvent[3];
+    private static ManualResetEvent[] readResetEvents = new ManualResetEvent[3];
+    private static ManualResetEvent[] avgResetEvents = new ManualResetEvent[3];
+    private static double[] A = [], B = [], C = [], R = [];
+    private static int dataSize;
+    private static double avgA = 0, avgB = 0, avgC = 0;
+
     public static void Main(string[] args)
     {
         // Request the size of the data files from the user
@@ -14,8 +24,8 @@ class Program
             return;
         }
 
-        // Convert size from MB to number of double values
-        int dataSize = dataSizeInKB * 1024 / sizeof(double);
+        // Convert size from KB to number of double values
+        dataSize = dataSizeInKB * 1024 / sizeof(double);
 
         // Generate random data and write to files
         GenerateRandomDataFile("A.txt", dataSize);
@@ -24,35 +34,138 @@ class Program
 
         Console.WriteLine("Files A.txt, B.txt, and C.txt have been created with random data.");
 
-        // Creating a Class Instance to Measure Time
-        TimeMeasurement timer = new TimeMeasurement();
+        // Initialize ManualResetEvents
+        for (int i = 0; i < mainResetEvents.Length; i++)
+        {
+            mainResetEvents[i] = new ManualResetEvent(false);
+        }
 
-        // Measuring Total Execution Time
+        for (int i = 0; i < readResetEvents.Length; i++)
+        {
+            readResetEvents[i] = new ManualResetEvent(false);
+        }
+
+        for (int i = 0; i < avgResetEvents.Length; i++)
+        {
+            avgResetEvents[i] = new ManualResetEvent(false);
+        }
+
+        // Create threads for reading data
+        Thread readAThread = new Thread(() =>
+        {
+            A = ReadArrayFromFile("A.txt");
+            readResetEvents[0].Set();
+        });
+
+        Thread readBThread = new Thread(() =>
+        {
+            B = ReadArrayFromFile("B.txt");
+            readResetEvents[1].Set();
+        });
+
+        Thread readCThread = new Thread(() =>
+        {
+            C = ReadArrayFromFile("C.txt");
+            readResetEvents[2].Set();
+        });
+
+        // Create threads for calculating averages
+        Thread avgAThread = new Thread(() =>
+        {
+            avgA = CalculateAverage(A);
+            avgResetEvents[0].Set();
+        });
+
+        Thread avgBThread = new Thread(() =>
+        {
+            avgB = CalculateAverage(B);
+            avgResetEvents[1].Set();
+        });
+
+        Thread avgCThread = new Thread(() =>
+        {
+            avgC = CalculateAverage(C);
+            avgResetEvents[2].Set();
+        });
+
+        // Create threads for main tasks
+        Thread readDataThread = new Thread(ReadData);
+        Thread calculateResultThread = new Thread(CalculateResult);
+        Thread writeResultThread = new Thread(WriteResult);
+
+        // Start threads
+        readAThread.Start();
+        readBThread.Start();
+        readCThread.Start();
+        avgAThread.Start();
+        avgBThread.Start();
+        avgCThread.Start();
+        readDataThread.Start();
+        calculateResultThread.Start();
+        writeResultThread.Start();
+
+        // Start measuring time
         timer.Start();
 
-        // Entering data from files
-        double[] A = ReadArrayFromFile("A.txt");
-        double[] B = ReadArrayFromFile("B.txt");
-        double[] C = ReadArrayFromFile("C.txt");
-        double[] R = CalculateResultArray(A, B, C);
+        // Wait for all threads to complete
+        WaitHandle.WaitAll(mainResetEvents);
+        Console.WriteLine("All tasks completed.");
+    }
 
-        // Output the results to a file
+    private static void ReadData()
+    {
+        // Wait for files data reading to complete
+        WaitHandle.WaitAll(readResetEvents);
+
+        Console.WriteLine("Data has been read from files.");
+
+        // Signal that data reading is complete
+        mainResetEvents[0].Set();
+    }
+
+    private static void CalculateResult()
+    {
+        // Wait for data reading to complete
+        mainResetEvents[0].WaitOne();
+
+        // Wait for averages to be calculated
+        WaitHandle.WaitAll(avgResetEvents);
+
+        R = CalculateResultArray(A, B, C, avgA, avgB, avgC);
+
+        Console.WriteLine("Result array has been calculated.");
+
+        // Signal that calculation is complete
+        mainResetEvents[1].Set();
+    }
+
+    private static void WriteResult()
+    {
+        // Wait for calculation to complete
+        mainResetEvents[1].WaitOne();
+
         WriteArrayToFile("R.txt", R);
+
+        Console.WriteLine("Result array has been written to file.");
+
+        // Stop measuring time
         timer.Stop();
 
+        // Get elapsed time and process time
         double elapsedTime = timer.GetElapsedTime();
-
-        // Measuring CPU Time
-        TimeSpan processTime = timer.GetProcessTime();
         double elapsedTimeUsingTimeGetTime = timer.GetElapsedTimeUsingTimeGetTime();
+        TimeSpan processTime = timer.GetProcessTime();
 
-        // Screen Time Display
+        // Display elapsed time and process time
         Console.WriteLine($"Elapsed Time (QueryPerformanceCounter): {elapsedTime} seconds");
         Console.WriteLine($"Elapsed Time (timeGetTime): {elapsedTimeUsingTimeGetTime} seconds");
         Console.WriteLine($"Process Time: {processTime.TotalSeconds} seconds");
+
+        // Signal that writing is complete
+        mainResetEvents[2].Set();
     }
 
-    static void GenerateRandomDataFile(string fileName, int dataSize)
+    private static void GenerateRandomDataFile(string fileName, int dataSize)
     {
         Random random = new Random();
         using (StreamWriter writer = new StreamWriter(fileName, false)) // Open file with overwrite mode
@@ -65,7 +178,7 @@ class Program
         }
     }
 
-    static double[] ReadArrayFromFile(string fileName)
+    private static double[] ReadArrayFromFile(string fileName)
     {
         string[] lines = File.ReadAllLines(fileName);
         double[] array = new double[lines.Length];
@@ -76,7 +189,7 @@ class Program
         return array;
     }
 
-    static void WriteArrayToFile(string fileName, double[] array)
+    private static void WriteArrayToFile(string fileName, double[] array)
     {
         using (StreamWriter writer = new StreamWriter(fileName))
         {
@@ -87,13 +200,10 @@ class Program
         }
     }
 
-    static double[] CalculateResultArray(double[] A, double[] B, double[] C)
+    private static double[] CalculateResultArray(double[] A, double[] B, double[] C, double avgA, double avgB, double avgC)
     {
         int length = A.Length;
         double[] R = new double[length];
-        double avgA = CalculateAverage(A);
-        double avgB = CalculateAverage(B);
-        double avgC = CalculateAverage(C);
 
         for (int i = 0; i < length; i++)
         {
@@ -103,7 +213,7 @@ class Program
         return R;
     }
 
-    static double CalculateAverage(double[] array)
+    private static double CalculateAverage(double[] array)
     {
         double sum = 0;
         foreach (double value in array)
