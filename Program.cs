@@ -3,16 +3,18 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Timers;
+using System.Diagnostics;
 
 internal class Program
 {
     private static TimeMeasurement timer = new TimeMeasurement();
-    private static ManualResetEvent[] mainResetEvents = new ManualResetEvent[3];
-    private static ManualResetEvent[] readResetEvents = new ManualResetEvent[3];
-    private static ManualResetEvent[] avgResetEvents = new ManualResetEvent[3];
+    private static Semaphore readSemaphore = new Semaphore(0, 3);
+    private static Semaphore avgSemaphore = new Semaphore(0, 3);
+    private static Semaphore mainSemaphore = new Semaphore(0, 1);
     private static double[] A = [], B = [], C = [], R = [];
     private static int dataSize;
     private static double avgA = 0, avgB = 0, avgC = 0;
+    private static Stopwatch semaphoreStopwatch = new Stopwatch();
 
     public static void Main(string[] args)
     {
@@ -34,58 +36,42 @@ internal class Program
 
         Console.WriteLine("Files A.txt, B.txt, and C.txt have been created with random data.");
 
-        // Initialize ManualResetEvents
-        for (int i = 0; i < mainResetEvents.Length; i++)
-        {
-            mainResetEvents[i] = new ManualResetEvent(false);
-        }
-
-        for (int i = 0; i < readResetEvents.Length; i++)
-        {
-            readResetEvents[i] = new ManualResetEvent(false);
-        }
-
-        for (int i = 0; i < avgResetEvents.Length; i++)
-        {
-            avgResetEvents[i] = new ManualResetEvent(false);
-        }
-
         // Create threads for reading data
         Thread readAThread = new Thread(() =>
         {
             A = ReadArrayFromFile("A.txt");
-            readResetEvents[0].Set();
+            readSemaphore.Release();
         });
 
         Thread readBThread = new Thread(() =>
         {
             B = ReadArrayFromFile("B.txt");
-            readResetEvents[1].Set();
+            readSemaphore.Release();
         });
 
         Thread readCThread = new Thread(() =>
         {
             C = ReadArrayFromFile("C.txt");
-            readResetEvents[2].Set();
+            readSemaphore.Release();
         });
 
         // Create threads for calculating averages
         Thread avgAThread = new Thread(() =>
         {
             avgA = CalculateAverage(A);
-            avgResetEvents[0].Set();
+            avgSemaphore.Release();
         });
 
         Thread avgBThread = new Thread(() =>
         {
             avgB = CalculateAverage(B);
-            avgResetEvents[1].Set();
+            avgSemaphore.Release();
         });
 
         Thread avgCThread = new Thread(() =>
         {
             avgC = CalculateAverage(C);
-            avgResetEvents[2].Set();
+            avgSemaphore.Release();
         });
 
         // Create threads for main tasks
@@ -107,42 +93,58 @@ internal class Program
         // Start measuring time
         timer.Start();
 
+        semaphoreStopwatch.Start();
+
         // Wait for all threads to complete
-        WaitHandle.WaitAll(mainResetEvents);
+        mainSemaphore.WaitOne();
         Console.WriteLine("All tasks completed.");
+
+        // Display semaphore time
+        Console.WriteLine($"Semaphore Time: {semaphoreStopwatch.Elapsed.TotalSeconds} seconds");
     }
 
     private static void ReadData()
     {
+        semaphoreStopwatch.Start();
         // Wait for files data reading to complete
-        WaitHandle.WaitAll(readResetEvents);
+        for (int i = 0; i < 3; i++)
+        {
+            readSemaphore.WaitOne();
+        }
 
         Console.WriteLine("Data has been read from files.");
 
         // Signal that data reading is complete
-        mainResetEvents[0].Set();
+        mainSemaphore.Release();
+        semaphoreStopwatch.Stop();
     }
 
     private static void CalculateResult()
     {
+        semaphoreStopwatch.Start();
         // Wait for data reading to complete
-        mainResetEvents[0].WaitOne();
+        mainSemaphore.WaitOne();
 
         // Wait for averages to be calculated
-        WaitHandle.WaitAll(avgResetEvents);
+        for (int i = 0; i < 3; i++)
+        {
+            avgSemaphore.WaitOne();
+        }
 
         R = CalculateResultArray(A, B, C, avgA, avgB, avgC);
 
         Console.WriteLine("Result array has been calculated.");
 
         // Signal that calculation is complete
-        mainResetEvents[1].Set();
+        mainSemaphore.Release();
+        semaphoreStopwatch.Stop();
     }
 
     private static void WriteResult()
     {
+        semaphoreStopwatch.Start();
         // Wait for calculation to complete
-        mainResetEvents[1].WaitOne();
+        mainSemaphore.WaitOne();
 
         WriteArrayToFile("R.txt", R);
 
@@ -162,7 +164,8 @@ internal class Program
         Console.WriteLine($"Process Time: {processTime.TotalSeconds} seconds");
 
         // Signal that writing is complete
-        mainResetEvents[2].Set();
+        mainSemaphore.Release();
+        semaphoreStopwatch.Stop();
     }
 
     private static void GenerateRandomDataFile(string fileName, int dataSize)
